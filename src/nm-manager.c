@@ -2420,7 +2420,6 @@ device_realized (NMDevice *device,
 	_notify (self, PROP_DEVICES);
 }
 
-#if WITH_CONCHECK
 static void
 device_connectivity_changed (NMDevice *device,
                              GParamSpec *pspec,
@@ -2448,7 +2447,6 @@ device_connectivity_changed (NMDevice *device,
 		nm_dispatcher_call_connectivity (priv->connectivity_state, NULL, NULL, NULL);
 	}
 }
-#endif
 
 static void
 _device_realize_finish (NMManager *self,
@@ -2555,11 +2553,9 @@ add_device (NMManager *self, NMDevice *device, GError **error)
 	                  G_CALLBACK (device_realized),
 	                  self);
 
-#if WITH_CONCHECK
 	g_signal_connect (device, "notify::" NM_DEVICE_CONNECTIVITY,
 	                  G_CALLBACK (device_connectivity_changed),
 	                  self);
-#endif
 
 	if (priv->startup) {
 		g_signal_connect (device, "notify::" NM_DEVICE_HAS_PENDING_ACTION,
@@ -5322,34 +5318,54 @@ impl_manager_get_logging (NMManager *manager,
 }
 
 typedef struct {
-	guint remaining;
+	NMManager *self;
 	GDBusMethodInvocation *context;
-	NMConnectivityState state;
+	guint remaining;
 } ConnectivityCheckData;
 
 static void
-device_connectivity_done (NMDevice *device, NMConnectivityState state, gpointer user_data)
+device_connectivity_done (NMDevice *device,
+                          NMDeviceConnectivityHandle *handle,
+                          NMConnectivityState state,
+                          GError *error,
+                          gpointer user_data)
 {
 	ConnectivityCheckData *data = user_data;
+	NMManager *self;
+	NMManagerPrivate *priv;
+
+	nm_assert (data);
+	nm_assert (data->remaining > 0);
+	nm_assert (NM_IS_MANAGER (data->self));
 
 	data->remaining--;
 
-	/* We check if the state is already FULL so that we can provide the
-	 * response without waiting for slower devices that are not going to
-	 * affect the overall state anyway. */
+	self = data->self;
+	priv = NM_MANAGER_GET_PRIVATE (self);
 
-	if (data->state != NM_CONNECTIVITY_FULL) {
-		if (state > data->state)
-			data->state = state;
-
-		if (data->state == NM_CONNECTIVITY_FULL || !data->remaining) {
-			g_dbus_method_invocation_return_value (data->context,
-			                                       g_variant_new ("(u)", data->state));
-		}
+	if (   data->context
+	    && (   data->remaining == 0
+	        || (   state == NM_CONNECTIVITY_FULL
+	            && priv->connectivity_state == NM_CONNECTIVITY_FULL))) {
+		/* despite having a @handle and @state returned by the requests, we always
+		 * return the current connectivity_state. That is, because the connectivity_state
+		 * and the answer to the connectivity check shall agree.
+		 *
+		 * However, if one of the requests (early) returns full connectivity and agrees with
+		 * the accumulated connectivity state, we no longer have to wait. The result is set.
+		 *
+		 * This also works well, because NMDevice first emits change signals to it's own
+		 * connectivity state, which is then taken into account for the accumulated global
+		 * state. All this happens, before the callback is invoked. */
+		g_dbus_method_invocation_return_value (g_steal_pointer (&data->context),
+		                                       g_variant_new ("(u)",
+		                                                      (guint) priv->connectivity_state));
 	}
 
-	if (!data->remaining)
+	if (data->remaining == 0) {
+		g_object_unref (self);
 		g_slice_free (ConnectivityCheckData, data);
+	}
 }
 
 static void
@@ -5362,8 +5378,8 @@ check_connectivity_auth_done_cb (NMAuthChain *chain,
 	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
 	GError *error = NULL;
 	NMAuthCallResult result;
-	ConnectivityCheckData *data;
 	const GSList *devices;
+	ConnectivityCheckData *data;
 
 	priv->auth_chains = g_slist_remove (priv->auth_chains, chain);
 
@@ -5379,21 +5395,37 @@ check_connectivity_auth_done_cb (NMAuthChain *chain,
 		error = g_error_new_literal (NM_MANAGER_ERROR,
 		                             NM_MANAGER_ERROR_PERMISSION_DENIED,
 		                             "Not authorized to recheck connectivity");
-	} else {
-		/* it's allowed */
-		data = g_slice_new0 (ConnectivityCheckData);
-		data->context = context;
-
-		for (devices = priv->devices; devices; devices = devices->next) {
-			data->remaining++;
-			nm_device_check_connectivity (NM_DEVICE (devices->data),
-			                              device_connectivity_done,
-			                              data);
-		}
 	}
 
-	if (error)
+	if (error) {
 		g_dbus_method_invocation_take_error (context, error);
+		goto out;
+	}
+
+	data = g_slice_new (ConnectivityCheckData);
+	data->self = g_object_ref (self);
+	data->context = context;
+	data->remaining = 0;
+
+	for (devices = priv->devices; devices; devices = devices->next) {
+		data->remaining++;
+		nm_device_check_connectivity (NM_DEVICE (devices->data),
+		                              device_connectivity_done,
+		                              data);
+	}
+
+	if (data->remaining == 0) {
+		/* call the handler at least once. */
+		data->remaining = 1;
+		device_connectivity_done (NULL,
+		                          NULL,
+		                          NM_CONNECTIVITY_UNKNOWN,
+		                          NULL,
+		                          data);
+		/* @data got destroyed. */
+	}
+
+out:
 	nm_auth_chain_unref (chain);
 }
 
@@ -6591,7 +6623,6 @@ get_property (GObject *object, guint prop_id,
 	const char *path;
 	NMActiveConnection *ac;
 	GPtrArray *ptrarr;
-	gboolean vbool;
 
 	switch (prop_id) {
 	case PROP_VERSION:
@@ -6648,12 +6679,8 @@ get_property (GObject *object, guint prop_id,
 		g_value_set_boolean (value, nm_config_data_get_connectivity_uri (config_data) != NULL);
 		break;
 	case PROP_CONNECTIVITY_CHECK_ENABLED:
-#if WITH_CONCHECK
-		vbool = nm_connectivity_check_enabled (nm_connectivity_get ());
-#else
-		vbool = FALSE;
-#endif
-		g_value_set_boolean (value, vbool);
+		g_value_set_boolean (value,
+		                     nm_connectivity_check_enabled (nm_connectivity_get ()));
 		break;
 	case PROP_PRIMARY_CONNECTION:
 		nm_utils_g_value_set_object_path (value, priv->primary_connection);

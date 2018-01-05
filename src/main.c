@@ -406,9 +406,7 @@ main (int argc, char *argv[])
 		}
 	}
 
-#if WITH_CONCHECK
 	NM_UTILS_KEEP_ALIVE (nm_manager_get (), nm_connectivity_get (), "NMManager-depends-on-NMConnectivity");
-#endif
 
 	nm_dispatcher_init ();
 
