@@ -673,6 +673,36 @@ _env_warn_fcn (const NMMetaEnvironment *environment,
 		return ((*(out_to_free)) = _val); \
 	} G_STMT_END
 
+static gboolean
+property_is_default (NMSetting *setting, const char *prop_name)
+{
+	GParamSpec *pspec;
+	GValue v = G_VALUE_INIT;
+	GHashTable *ht;
+	char **strv;
+	gboolean ret;
+
+	pspec = g_object_class_find_property (G_OBJECT_GET_CLASS (G_OBJECT (setting)),
+	                                      prop_name);
+	if (!G_IS_PARAM_SPEC (pspec))
+		g_return_val_if_reached (FALSE);
+
+	g_value_init (&v, pspec->value_type);
+	g_object_get_property (G_OBJECT (setting), prop_name, &v);
+
+	if (pspec->value_type == G_TYPE_STRV) {
+		strv = g_value_get_boxed (&v);
+		ret = !strv || !strv[0];
+	} else if (pspec->value_type == G_TYPE_HASH_TABLE) {
+		ht = g_value_get_boxed (&v);
+		ret = !ht || !g_hash_table_size (ht);
+	} else
+		ret = g_param_value_defaults (pspec, &v);
+
+	g_value_unset (&v);
+	return ret;
+}
+
 static gconstpointer
 _get_fcn_nmc_with_default (ARGS_GET_FCN)
 {
@@ -681,6 +711,7 @@ _get_fcn_nmc_with_default (ARGS_GET_FCN)
 	GValue val = G_VALUE_INIT;
 
 	RETURN_UNSUPPORTED_GET_TYPE ();
+	NM_SET_OUT (out_is_default, property_is_default (setting, property_info->property_name));
 
 	if (property_info->property_typ_data->subtype.get_with_default.fcn (setting)) {
 		if (get_type == NM_META_ACCESSOR_GET_TYPE_PRETTY)
@@ -696,6 +727,7 @@ _get_fcn_nmc_with_default (ARGS_GET_FCN)
 	else
 		s_full = g_strdup (s && *s ? s : " ");
 	g_value_unset (&val);
+
 	RETURN_STR_TO_FREE (s_full);
 }
 
@@ -703,6 +735,7 @@ static gconstpointer
 _get_fcn_gobject_impl (const NMMetaPropertyInfo *property_info,
                        NMSetting *setting,
                        NMMetaAccessorGetType get_type,
+                       gboolean *out_is_default,
                        gpointer *out_to_free)
 {
 	char *s;
@@ -711,6 +744,7 @@ _get_fcn_gobject_impl (const NMMetaPropertyInfo *property_info,
 	nm_auto_unset_gvalue GValue val = G_VALUE_INIT;
 
 	RETURN_UNSUPPORTED_GET_TYPE ();
+	NM_SET_OUT (out_is_default, property_is_default (setting, property_info->property_name));
 
 	gtype_prop = _gobject_property_get_gtype (G_OBJECT (setting), property_info->property_name);
 
@@ -736,13 +770,13 @@ _get_fcn_gobject_impl (const NMMetaPropertyInfo *property_info,
 static gconstpointer
 _get_fcn_gobject (ARGS_GET_FCN)
 {
-	return _get_fcn_gobject_impl (property_info, setting, get_type, out_to_free);
+	return _get_fcn_gobject_impl (property_info, setting, get_type, out_is_default, out_to_free);
 }
 
 static gconstpointer
 _get_fcn_gobject_int (ARGS_GET_FCN)
 {
-	const GParamSpec *pspec;
+	GParamSpec *pspec;
 	nm_auto_unset_gvalue GValue gval = G_VALUE_INIT;
 	gint64 v;
 	const NMMetaUtilsIntValueInfo *value_infos;
@@ -755,6 +789,7 @@ _get_fcn_gobject_int (ARGS_GET_FCN)
 
 	g_value_init (&gval, pspec->value_type);
 	g_object_get_property (G_OBJECT (setting), property_info->property_name, &gval);
+	NM_SET_OUT (out_is_default, g_param_value_defaults (pspec, &gval));
 	switch (pspec->value_type) {
 	case G_TYPE_INT:
 		v = g_value_get_int (&gval);
@@ -794,14 +829,16 @@ _get_fcn_gobject_mtu (ARGS_GET_FCN)
 
 	if (   !property_info->property_typ_data
 	    || !property_info->property_typ_data->subtype.mtu.get_fcn)
-		return _get_fcn_gobject_impl (property_info, setting, get_type, out_to_free);
+		return _get_fcn_gobject_impl (property_info, setting, get_type, out_is_default, out_to_free);
 
 	mtu = property_info->property_typ_data->subtype.mtu.get_fcn (setting);
 	if (mtu == 0) {
+		NM_SET_OUT (out_is_default, TRUE);
 		if (get_type == NM_META_ACCESSOR_GET_TYPE_PRETTY)
 			return _("auto");
 		return "auto";
 	}
+	NM_SET_OUT (out_is_default, FALSE);
 	RETURN_STR_TO_FREE (g_strdup_printf ("%u", (unsigned) mtu));
 }
 
@@ -810,12 +847,18 @@ _get_fcn_gobject_secret_flags (ARGS_GET_FCN)
 {
 	guint v;
 	GValue val = G_VALUE_INIT;
+	GParamSpec *pspec;
 
 	RETURN_UNSUPPORTED_GET_TYPE ();
 
-	g_value_init (&val, G_TYPE_UINT);
+	pspec = g_object_class_find_property (G_OBJECT_GET_CLASS (G_OBJECT (setting)), property_info->property_name);
+	if (!G_IS_PARAM_SPEC (pspec))
+		g_return_val_if_reached (NULL);
+
+	g_value_init (&val, pspec->value_type);
 	g_object_get_property (G_OBJECT (setting), property_info->property_name, &val);
-	v = g_value_get_uint (&val);
+	NM_SET_OUT (out_is_default, g_param_value_defaults (pspec, &val));
+	v = g_value_get_flags (&val);
 	g_value_unset (&val);
 	RETURN_STR_TO_FREE (secret_flags_to_string (v, get_type));
 }
@@ -824,7 +867,6 @@ static gconstpointer
 _get_fcn_gobject_enum (ARGS_GET_FCN)
 {
 	GType gtype = 0;
-	GType gtype_prop;
 	nm_auto_unref_gtypeclass GTypeClass *gtype_class = NULL;
 	nm_auto_unref_gtypeclass GTypeClass *gtype_prop_class = NULL;
 	gboolean has_gtype = FALSE;
@@ -837,6 +879,7 @@ _get_fcn_gobject_enum (ARGS_GET_FCN)
 	gboolean format_text_l10n = FALSE;
 	gs_free char *s = NULL;
 	char s_numeric[64];
+	GParamSpec *pspec;
 
 	RETURN_UNSUPPORTED_GET_TYPE ();
 
@@ -879,25 +922,26 @@ _get_fcn_gobject_enum (ARGS_GET_FCN)
 
 	nm_assert (format_text || format_numeric);
 
-	gtype_prop = _gobject_property_get_gtype (G_OBJECT (setting), property_info->property_name);
+	pspec = g_object_class_find_property (G_OBJECT_GET_CLASS (setting), property_info->property_name);
+	g_return_val_if_fail (pspec, NULL);
 
-	g_value_init (&gval, gtype_prop);
-
+	g_value_init (&gval, pspec->value_type);
 	g_object_get_property (G_OBJECT (setting), property_info->property_name, &gval);
+	NM_SET_OUT (out_is_default, g_param_value_defaults (pspec, &gval));
 
-	if (   gtype_prop == G_TYPE_INT
-	    || (    G_TYPE_IS_CLASSED (gtype_prop)
-	        &&  G_IS_ENUM_CLASS ((gtype_prop_class ?: (gtype_prop_class = g_type_class_ref (gtype_prop)))))) {
-		if (gtype_prop == G_TYPE_INT) {
+	if (   pspec->value_type == G_TYPE_INT
+	    || (    G_TYPE_IS_CLASSED (pspec->value_type)
+	        &&  G_IS_ENUM_CLASS ((gtype_prop_class ?: (gtype_prop_class = g_type_class_ref (pspec->value_type)))))) {
+		if (pspec->value_type == G_TYPE_INT) {
 			if (!has_gtype)
 				g_return_val_if_reached (NULL);
 			v = g_value_get_int (&gval);
 		} else
 		    v = g_value_get_enum (&gval);
-	} else if (   gtype_prop == G_TYPE_UINT
-	           || (   G_TYPE_IS_CLASSED (gtype_prop)
-	               && G_IS_FLAGS_CLASS ((gtype_prop_class ?: (gtype_prop_class = g_type_class_ref (gtype_prop)))))) {
-		if (gtype_prop == G_TYPE_UINT) {
+	} else if (   pspec->value_type == G_TYPE_UINT
+	           || (   G_TYPE_IS_CLASSED (pspec->value_type)
+	               && G_IS_FLAGS_CLASS ((gtype_prop_class ?: (gtype_prop_class = g_type_class_ref (pspec->value_type)))))) {
+		if (pspec->value_type == G_TYPE_UINT) {
 			if (!has_gtype)
 				g_return_val_if_reached (NULL);
 			v = g_value_get_uint (&gval);
@@ -907,7 +951,7 @@ _get_fcn_gobject_enum (ARGS_GET_FCN)
 		g_return_val_if_reached (NULL);
 
 	if (!has_gtype) {
-		gtype = gtype_prop;
+		gtype = pspec->value_type;
 		gtype_class = g_steal_pointer (&gtype_prop_class);
 	}
 
@@ -1531,7 +1575,7 @@ ip6_privacy_to_string (NMSettingIP6ConfigPrivacy ip6_privacy, NMMetaAccessorGetT
 }
 
 static char *
-secret_flags_to_string (guint32 flags, NMMetaAccessorGetType get_type)
+secret_flags_to_string (guint flags, NMMetaAccessorGetType get_type)
 {
 	GString *flag_str;
 
@@ -1966,6 +2010,7 @@ _get_fcn_802_1x_ca_cert (ARGS_GET_FCN)
 		break;
 	}
 
+	NM_SET_OUT (out_is_default, !ca_cert_str || !ca_cert_str[0]);
 	RETURN_STR_TO_FREE (ca_cert_str);
 }
 
@@ -1994,6 +2039,7 @@ _get_fcn_802_1x_client_cert (ARGS_GET_FCN)
 		break;
 	}
 
+	NM_SET_OUT (out_is_default, !cert_str || !cert_str[0]);
 	RETURN_STR_TO_FREE (cert_str);
 }
 
@@ -2019,6 +2065,7 @@ _get_fcn_802_1x_phase2_ca_cert (ARGS_GET_FCN)
 		break;
 	}
 
+	NM_SET_OUT (out_is_default, !phase2_ca_cert_str || !phase2_ca_cert_str[0]);
 	RETURN_STR_TO_FREE (phase2_ca_cert_str);
 }
 
@@ -2047,6 +2094,7 @@ _get_fcn_802_1x_phase2_client_cert (ARGS_GET_FCN)
 		break;
 	}
 
+	NM_SET_OUT (out_is_default, !cert_str || !cert_str[0]);
 	RETURN_STR_TO_FREE (cert_str);
 }
 
@@ -2054,9 +2102,13 @@ static gconstpointer
 _get_fcn_802_1x_password_raw (ARGS_GET_FCN)
 {
 	NMSetting8021x *s_8021X = NM_SETTING_802_1X (setting);
+	char *str;
 
 	RETURN_UNSUPPORTED_GET_TYPE ();
-	RETURN_STR_TO_FREE (bytes_to_string (nm_setting_802_1x_get_password_raw (s_8021X)));
+
+	str = bytes_to_string (nm_setting_802_1x_get_password_raw (s_8021X));
+	NM_SET_OUT (out_is_default, !str || !str[0]);
+	RETURN_STR_TO_FREE (str);
 }
 
 static gconstpointer
@@ -2084,6 +2136,7 @@ _get_fcn_802_1x_private_key (ARGS_GET_FCN)
 		break;
 	}
 
+	NM_SET_OUT (out_is_default, !key_str || !key_str[0]);
 	RETURN_STR_TO_FREE (key_str);
 }
 
@@ -2112,6 +2165,7 @@ _get_fcn_802_1x_phase2_private_key (ARGS_GET_FCN)
 		break;
 	}
 
+	NM_SET_OUT (out_is_default, !key_str || !key_str[0]);
 	RETURN_STR_TO_FREE (key_str);
 }
 
@@ -2305,6 +2359,7 @@ _get_fcn_bond_options (ARGS_GET_FCN)
 	}
 	g_string_truncate (bond_options_s, bond_options_s->len-1);  /* chop off trailing ',' */
 
+	NM_SET_OUT (out_is_default, bond_options_s->len == 0);
 	RETURN_STR_TO_FREE (g_string_free (bond_options_s, FALSE));
 }
 
@@ -2408,6 +2463,9 @@ _get_fcn_connection_permissions (ARGS_GET_FCN)
 		if (nm_setting_connection_get_permission (s_con, i, &perm_type, &perm_item, NULL))
 			g_string_append_printf (perm, "%s:%s,", perm_type, perm_item);
 	}
+
+	NM_SET_OUT (out_is_default, perm->len == 0);
+
 	if (perm->len > 0) {
 		g_string_truncate (perm, perm->len-1); /* remove trailing , */
 		RETURN_STR_TO_FREE (g_string_free (perm, FALSE));
@@ -2677,6 +2735,7 @@ _get_fcn_connection_metered (ARGS_GET_FCN)
 	const char *s;
 
 	RETURN_UNSUPPORTED_GET_TYPE ();
+	NM_SET_OUT (out_is_default, FALSE);
 
 	switch (nm_setting_connection_get_metered (s_conn)) {
 	case NM_METERED_YES:
@@ -2687,9 +2746,11 @@ _get_fcn_connection_metered (ARGS_GET_FCN)
 		break;
 	case NM_METERED_UNKNOWN:
 	default:
+		NM_SET_OUT (out_is_default, TRUE);
 		s = N_("unknown");
 		break;
 	}
+
 	if (get_type == NM_META_ACCESSOR_GET_TYPE_PRETTY)
 		return _(s);
 	return s;
@@ -3107,12 +3168,15 @@ _get_fcn_infiniband_p_key (ARGS_GET_FCN)
 
 	p_key = nm_setting_infiniband_get_p_key (s_infiniband);
 	if (p_key == -1) {
+		NM_SET_OUT (out_is_default, TRUE);
 		if (get_type != NM_META_ACCESSOR_GET_TYPE_PRETTY)
 			return "default";
 		else
 			return _("default");
-	} else
-		RETURN_STR_TO_FREE (g_strdup_printf ("0x%04x", p_key));
+	}
+
+	NM_SET_OUT (out_is_default, FALSE);
+	RETURN_STR_TO_FREE (g_strdup_printf ("0x%04x", p_key));
 }
 
 static gconstpointer
@@ -3139,6 +3203,7 @@ _get_fcn_ip_config_addresses (ARGS_GET_FCN)
 		                        nm_ip_address_get_prefix (addr));
 	}
 
+	NM_SET_OUT (out_is_default, num_addresses == 0);
 	RETURN_STR_TO_FREE (g_string_free (printable, FALSE));
 }
 
@@ -3210,6 +3275,7 @@ _get_fcn_ip_config_routes (ARGS_GET_FCN)
 		}
 	}
 
+	NM_SET_OUT (out_is_default, num_routes == 0);
 	RETURN_STR_TO_FREE (g_string_free (printable, FALSE));
 }
 
@@ -3460,8 +3526,13 @@ static gconstpointer
 _get_fcn_ip6_config_ip6_privacy (ARGS_GET_FCN)
 {
 	NMSettingIP6Config *s_ip6 = NM_SETTING_IP6_CONFIG (setting);
+	NMSettingIP6ConfigPrivacy value;
+
 	RETURN_UNSUPPORTED_GET_TYPE ();
-	RETURN_STR_TO_FREE (ip6_privacy_to_string (nm_setting_ip6_config_get_ip6_privacy (s_ip6), get_type));
+
+	value = nm_setting_ip6_config_get_ip6_privacy (s_ip6);
+	NM_SET_OUT (out_is_default, value == NM_SETTING_IP6_CONFIG_PRIVACY_UNKNOWN);
+	RETURN_STR_TO_FREE (ip6_privacy_to_string (value, get_type));
 }
 
 static const char *ipv6_valid_methods[] = {
@@ -3718,17 +3789,23 @@ DEFINE_REMOVER_INDEX_OR_VALUE (_remove_fcn_ipv6_config_routes,
 static gboolean
 _set_fcn_ip6_config_ip6_privacy (ARGS_SET_FCN)
 {
-	gint64 val_int;
+	unsigned long val_int;
 
 	nm_assert (!error || !*error);
 
-	val_int = _nm_utils_ascii_str_to_int64 (value, 10, -1, 2, G_MAXINT);
-	if (val_int == G_MAXINT) {
-		g_set_error (error, 1, 0, _("'%s' is not valid; use -1, 0, 1, or 2"), value);
+	if (!nmc_string_to_uint (value, FALSE, 0, 0, &val_int)) {
+		g_set_error (error, 1, 0, _("'%s' is not a number"), value);
 		return FALSE;
 	}
 
-	g_object_set (setting, property_info->property_name, (int) val_int, NULL);
+	if (   val_int != NM_SETTING_IP6_CONFIG_PRIVACY_DISABLED
+	    && val_int != NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_PUBLIC_ADDR
+	    && val_int != NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_TEMP_ADDR) {
+		g_set_error (error, 1, 0, _("'%s' is not valid; use 0, 1, or 2"), value);
+		return FALSE;
+	}
+
+	g_object_set (setting, property_info->property_name, val_int, NULL);
 	return TRUE;
 }
 
@@ -3747,6 +3824,7 @@ _get_fcn_olpc_mesh_ssid (ARGS_GET_FCN)
 		                                  g_bytes_get_size (ssid));
 	}
 
+	NM_SET_OUT (out_is_default, !ssid_str || !ssid_str[0]);
 	RETURN_STR_TO_FREE (ssid_str);
 }
 
@@ -3802,6 +3880,7 @@ _get_fcn_tc_config_qdiscs (ARGS_GET_FCN)
 		}
 	}
 
+	NM_SET_OUT (out_is_default, num_qdiscs == 0);
 	RETURN_STR_TO_FREE (g_string_free (printable, FALSE));
 }
 
@@ -3878,6 +3957,7 @@ _get_fcn_tc_config_tfilters (ARGS_GET_FCN)
 		}
 	}
 
+	NM_SET_OUT (out_is_default, num_tfilters == 0);
 	RETURN_STR_TO_FREE (g_string_free (printable, FALSE));
 }
 
@@ -4022,6 +4102,7 @@ _get_fcn_team_link_watchers (ARGS_GET_FCN)
 		}
 	}
 
+	NM_SET_OUT (out_is_default, num_watchers == 0);
 	RETURN_STR_TO_FREE (g_string_free (printable, FALSE));
 }
 
@@ -4095,6 +4176,7 @@ _get_fcn_team_port_link_watchers (ARGS_GET_FCN)
 		}
 	}
 
+	NM_SET_OUT (out_is_default, num_watchers == 0);
 	RETURN_STR_TO_FREE (g_string_free (printable, FALSE));
 }
 
@@ -4147,24 +4229,39 @@ static gconstpointer
 _get_fcn_vlan_flags (ARGS_GET_FCN)
 {
 	NMSettingVlan *s_vlan = NM_SETTING_VLAN (setting);
+	guint32 flags;
+
 	RETURN_UNSUPPORTED_GET_TYPE ();
-	RETURN_STR_TO_FREE (vlan_flags_to_string (nm_setting_vlan_get_flags (s_vlan), get_type));
+
+	flags = nm_setting_vlan_get_flags (s_vlan);
+	NM_SET_OUT (out_is_default, flags == 0);
+	RETURN_STR_TO_FREE (vlan_flags_to_string (flags, get_type));
 }
 
 static gconstpointer
 _get_fcn_vlan_ingress_priority_map (ARGS_GET_FCN)
 {
 	NMSettingVlan *s_vlan = NM_SETTING_VLAN (setting);
+	char *str;
+
 	RETURN_UNSUPPORTED_GET_TYPE ();
-	RETURN_STR_TO_FREE (vlan_priorities_to_string (s_vlan, NM_VLAN_INGRESS_MAP));
+
+	str = vlan_priorities_to_string (s_vlan, NM_VLAN_INGRESS_MAP);
+	NM_SET_OUT (out_is_default, !str || !str[0]);
+	RETURN_STR_TO_FREE (str);
 }
 
 static gconstpointer
 _get_fcn_vlan_egress_priority_map (ARGS_GET_FCN)
 {
 	NMSettingVlan *s_vlan = NM_SETTING_VLAN (setting);
+	char *str;
+
 	RETURN_UNSUPPORTED_GET_TYPE ();
-	RETURN_STR_TO_FREE (vlan_priorities_to_string (s_vlan, NM_VLAN_EGRESS_MAP));
+
+	str = vlan_priorities_to_string (s_vlan, NM_VLAN_EGRESS_MAP);
+	NM_SET_OUT (out_is_default, !str || !str[0]);
+	RETURN_STR_TO_FREE (str);
 }
 
 static gboolean
@@ -4287,7 +4384,7 @@ _get_fcn_vpn_data (ARGS_GET_FCN)
 
 	data_item_str = g_string_new (NULL);
 	nm_setting_vpn_foreach_data_item (s_vpn, &vpn_data_item, data_item_str);
-
+	NM_SET_OUT (out_is_default, data_item_str->len == 0);
 	RETURN_STR_TO_FREE (g_string_free (data_item_str, FALSE));
 }
 
@@ -4301,7 +4398,7 @@ _get_fcn_vpn_secrets (ARGS_GET_FCN)
 
 	secret_str = g_string_new (NULL);
 	nm_setting_vpn_foreach_secret (s_vpn, &vpn_data_item, secret_str);
-
+	NM_SET_OUT (out_is_default, secret_str->len == 0);
 	RETURN_STR_TO_FREE (g_string_free (secret_str, FALSE));
 }
 
@@ -4443,6 +4540,7 @@ _get_fcn_wireless_ssid (ARGS_GET_FCN)
 		                                  g_bytes_get_size (ssid));
 	}
 
+	NM_SET_OUT (out_is_default, !ssid_str || !ssid_str[0]);
 	RETURN_STR_TO_FREE (ssid_str);
 }
 
@@ -4500,36 +4598,52 @@ static gconstpointer
 _get_fcn_wireless_security_wep_key0 (ARGS_GET_FCN)
 {
 	NMSettingWirelessSecurity *s_wireless_sec = NM_SETTING_WIRELESS_SECURITY (setting);
+	char *key;
 
 	RETURN_UNSUPPORTED_GET_TYPE ();
-	RETURN_STR_TO_FREE (g_strdup (nm_setting_wireless_security_get_wep_key (s_wireless_sec, 0)));
+
+	key = g_strdup (nm_setting_wireless_security_get_wep_key (s_wireless_sec, 0));
+	NM_SET_OUT (out_is_default, !key || !key[0]);
+	RETURN_STR_TO_FREE (key);
 }
 
 static gconstpointer
 _get_fcn_wireless_security_wep_key1 (ARGS_GET_FCN)
 {
 	NMSettingWirelessSecurity *s_wireless_sec = NM_SETTING_WIRELESS_SECURITY (setting);
+	char * key;
 
 	RETURN_UNSUPPORTED_GET_TYPE ();
-	RETURN_STR_TO_FREE (g_strdup (nm_setting_wireless_security_get_wep_key (s_wireless_sec, 1)));
+
+	key = g_strdup (nm_setting_wireless_security_get_wep_key (s_wireless_sec, 1));
+	NM_SET_OUT (out_is_default, !key || !key[0]);
+	RETURN_STR_TO_FREE (key);
 }
 
 static gconstpointer
 _get_fcn_wireless_security_wep_key2 (ARGS_GET_FCN)
 {
 	NMSettingWirelessSecurity *s_wireless_sec = NM_SETTING_WIRELESS_SECURITY (setting);
+	char * key;
 
 	RETURN_UNSUPPORTED_GET_TYPE ();
-	RETURN_STR_TO_FREE (g_strdup (nm_setting_wireless_security_get_wep_key (s_wireless_sec, 2)));
+
+	key = g_strdup (nm_setting_wireless_security_get_wep_key (s_wireless_sec, 2));
+	NM_SET_OUT (out_is_default, !key || !key[0]);
+	RETURN_STR_TO_FREE (key);
 }
 
 static gconstpointer
 _get_fcn_wireless_security_wep_key3 (ARGS_GET_FCN)
 {
 	NMSettingWirelessSecurity *s_wireless_sec = NM_SETTING_WIRELESS_SECURITY (setting);
+	char * key;
 
 	RETURN_UNSUPPORTED_GET_TYPE ();
-	RETURN_STR_TO_FREE (g_strdup (nm_setting_wireless_security_get_wep_key (s_wireless_sec, 3)));
+
+	key = g_strdup (nm_setting_wireless_security_get_wep_key (s_wireless_sec, 3));
+	NM_SET_OUT (out_is_default, !key || !key[0]);
+	RETURN_STR_TO_FREE (key);
 }
 
 static const char *wifi_sec_valid_protos[] = { "wpa", "rsn", NULL };
@@ -7950,8 +8064,10 @@ _meta_type_property_info_get_fcn (const NMMetaAbstractInfo *abstract_info,
 	nm_assert (out_to_free);
 
 	if (   info->is_secret
-	    && !NM_FLAGS_HAS (get_flags, NM_META_ACCESSOR_GET_FLAGS_SHOW_SECRETS))
+	    && !NM_FLAGS_HAS (get_flags, NM_META_ACCESSOR_GET_FLAGS_SHOW_SECRETS)) {
+		NM_SET_OUT (out_is_default, TRUE);
 		return _get_text_hidden (get_type);
+	}
 
 	return info->property_type->get_fcn (info,
 	                                     environment,
