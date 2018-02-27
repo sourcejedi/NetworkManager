@@ -232,6 +232,7 @@ nm_meta_abstract_info_get (const NMMetaAbstractInfo *abstract_info,
                            NMMetaAccessorGetType get_type,
                            NMMetaAccessorGetFlags get_flags,
                            NMMetaAccessorGetOutFlags *out_flags,
+                           gboolean *out_is_default,
                            gpointer *out_to_free)
 {
 	nm_assert (abstract_info);
@@ -251,6 +252,7 @@ nm_meta_abstract_info_get (const NMMetaAbstractInfo *abstract_info,
 	                                          get_type,
 	                                          get_flags,
 	                                          out_flags,
+	                                          out_is_default,
 	                                          out_to_free);
 }
 

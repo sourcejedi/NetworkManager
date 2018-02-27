@@ -640,7 +640,7 @@ _env_warn_fcn (const NMMetaEnvironment *environment,
 	const NMMetaPropertyInfo *property_info, char **out_to_free
 
 #define ARGS_GET_FCN \
-	const NMMetaPropertyInfo *property_info, const NMMetaEnvironment *environment, gpointer environment_user_data, NMSetting *setting, NMMetaAccessorGetType get_type, NMMetaAccessorGetFlags get_flags, NMMetaAccessorGetOutFlags *out_flags, gpointer *out_to_free
+	const NMMetaPropertyInfo *property_info, const NMMetaEnvironment *environment, gpointer environment_user_data, NMSetting *setting, NMMetaAccessorGetType get_type, NMMetaAccessorGetFlags get_flags, NMMetaAccessorGetOutFlags *out_flags, gboolean *out_is_default, gpointer *out_to_free
 
 #define ARGS_SET_FCN \
 	const NMMetaPropertyInfo *property_info, const NMMetaEnvironment *environment, gpointer environment_user_data, NMSetting *setting, const char *value, GError **error
@@ -7906,12 +7906,15 @@ _meta_type_setting_info_editor_get_fcn (const NMMetaAbstractInfo *abstract_info,
                                         NMMetaAccessorGetType get_type,
                                         NMMetaAccessorGetFlags get_flags,
                                         NMMetaAccessorGetOutFlags *out_flags,
+                                        gboolean *out_is_default,
                                         gpointer *out_to_free)
 {
 	const NMMetaSettingInfoEditor *info = (const NMMetaSettingInfoEditor *) abstract_info;
 
 	nm_assert (!out_to_free || !*out_to_free);
 	nm_assert (out_flags && !*out_flags);
+
+	NM_SET_OUT (out_is_default, FALSE);
 
 	if (!NM_IN_SET (get_type,
 	                NM_META_ACCESSOR_GET_TYPE_PARSABLE,
@@ -7931,6 +7934,7 @@ _meta_type_property_info_get_fcn (const NMMetaAbstractInfo *abstract_info,
                                   NMMetaAccessorGetType get_type,
                                   NMMetaAccessorGetFlags get_flags,
                                   NMMetaAccessorGetOutFlags *out_flags,
+                                  gboolean *out_is_default,
                                   gpointer *out_to_free)
 {
 	const NMMetaPropertyInfo *info = (const NMMetaPropertyInfo *) abstract_info;
@@ -7956,6 +7960,7 @@ _meta_type_property_info_get_fcn (const NMMetaAbstractInfo *abstract_info,
 	                                     get_type,
 	                                     get_flags,
 	                                     out_flags,
+	                                     out_is_default,
 	                                     out_to_free);
 
 }
