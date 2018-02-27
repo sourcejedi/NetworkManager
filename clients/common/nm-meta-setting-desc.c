@@ -3718,23 +3718,17 @@ DEFINE_REMOVER_INDEX_OR_VALUE (_remove_fcn_ipv6_config_routes,
 static gboolean
 _set_fcn_ip6_config_ip6_privacy (ARGS_SET_FCN)
 {
-	unsigned long val_int;
+	gint64 val_int;
 
 	nm_assert (!error || !*error);
 
-	if (!nmc_string_to_uint (value, FALSE, 0, 0, &val_int)) {
-		g_set_error (error, 1, 0, _("'%s' is not a number"), value);
+	val_int = _nm_utils_ascii_str_to_int64 (value, 10, -1, 2, G_MAXINT);
+	if (val_int == G_MAXINT) {
+		g_set_error (error, 1, 0, _("'%s' is not valid; use -1, 0, 1, or 2"), value);
 		return FALSE;
 	}
 
-	if (   val_int != NM_SETTING_IP6_CONFIG_PRIVACY_DISABLED
-	    && val_int != NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_PUBLIC_ADDR
-	    && val_int != NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_TEMP_ADDR) {
-		g_set_error (error, 1, 0, _("'%s' is not valid; use 0, 1, or 2"), value);
-		return FALSE;
-	}
-
-	g_object_set (setting, property_info->property_name, val_int, NULL);
+	g_object_set (setting, property_info->property_name, (int) val_int, NULL);
 	return TRUE;
 }
 
