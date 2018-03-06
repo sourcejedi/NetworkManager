@@ -3941,6 +3941,23 @@ _new_active_connection (NMManager *self,
 	                                                  device);
 }
 
+static gboolean
+active_connection_master_changed (NMActiveConnection *ac)
+{
+	NMConnection *applied;
+	NMSettingsConnection *settings;
+	NMSettingConnection *s_con1, *s_con2;
+
+	applied = nm_active_connection_get_applied_connection (ac);
+	settings = nm_active_connection_get_settings_connection (ac);
+	s_con1 = nm_connection_get_setting_connection (applied);
+	s_con2 = nm_connection_get_setting_connection (NM_CONNECTION (settings));
+	nm_assert (s_con1);
+	nm_assert (s_con2);
+	return !nm_streq0 (nm_setting_connection_get_master (s_con1),
+	                   nm_setting_connection_get_master (s_con2));
+}
+
 static void
 _internal_activation_auth_done (NMActiveConnection *active,
                                 gboolean success,
@@ -3969,6 +3986,14 @@ _internal_activation_auth_done (NMActiveConnection *active,
 			    && NM_IN_SET (nm_active_connection_get_state (ac),
 			                  NM_ACTIVE_CONNECTION_STATE_ACTIVATING,
 			                  NM_ACTIVE_CONNECTION_STATE_ACTIVATED)) {
+
+				if (active_connection_master_changed (ac)) {
+					nm_log_dbg (LOGD_CORE,
+					            "Connection '%s' is already active but master changed, continue activation",
+					            nm_active_connection_get_settings_connection_id (ac));
+					break;
+				}
+
 				g_set_error (&error,
 				             NM_MANAGER_ERROR,
 				             NM_MANAGER_ERROR_CONNECTION_ALREADY_ACTIVE,
