@@ -226,7 +226,7 @@ read_client_id (const char *str)
 	}
 
 	/* Otherwise, try to read a hexadecimal sequence */
-	s = g_strdup (str + 1);
+	s = g_strdup (str);
 	g_strchomp (s);
 	if (s[strlen (s) - 1] == ';')
 		s[strlen (s) - 1] = '\0';

@@ -297,13 +297,13 @@ test_hex_single_client_id (void)
 /*****************************************************************************/
 
 static const char *existing_hex_client_id_orig = \
-	"send dhcp-client-identifier 00:30:04:20:7A:08;\n";
+	"send dhcp-client-identifier 10:30:04:20:7A:08;\n";
 
 static const char *existing_hex_client_id_expected = \
 	"# Created by NetworkManager\n"
 	"# Merged from /path/to/dhclient.conf\n"
 	"\n"
-	"send dhcp-client-identifier 00:30:04:20:7A:08;\n"
+	"send dhcp-client-identifier 10:30:04:20:7A:08;\n"
 	"\n"
 	"option rfc3442-classless-static-routes code 121 = array of unsigned integer 8;\n"
 	"option ms-classless-static-routes code 249 = array of unsigned integer 8;\n"
@@ -320,7 +320,7 @@ static void
 test_existing_hex_client_id (void)
 {
 	gs_unref_bytes GBytes *new_client_id = NULL;
-	const guint8 bytes[] = { 0x00, 0x30, 0x04,0x20, 0x7A, 0x08 };
+	const guint8 bytes[] = { 0x10, 0x30, 0x04, 0x20, 0x7A, 0x08 };
 
 	new_client_id = g_bytes_new (bytes, sizeof (bytes));
 	test_config (existing_hex_client_id_orig, existing_hex_client_id_expected,
